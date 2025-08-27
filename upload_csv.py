@@ -5,10 +5,10 @@ import string
 import os
 import shutil
 from datetime import datetime, timedelta
-from tkinter import Tk, filedialog
 from faker import Faker
 
 # ---------------------------- Config ----------------------------
+SLIDES_FOLDER = r"D:\Slides\PathAI-Import\Uploads"  # Server folder with slides
 DEST_BASE_FOLDER = r"D:\Slides\PathAI-Import\Processed"
 USED_IDS_FILE = "used_ids.csv"
 
@@ -42,7 +42,8 @@ def random_accession_id():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=10))
 
 def random_case_assignees(n=2):
-    return ",".join([str(random.randint(1000000000, 9999999999)) for _ in range(n)])
+    return random.randint(1000000000, 9999999999)
+    #return ",".join([str(random.randint(1000000000, 9999999999)) for _ in range(n)])
 
 def load_used_ids():
     if os.path.exists(USED_IDS_FILE):
@@ -52,23 +53,17 @@ def load_used_ids():
 def save_used_ids(df):
     df.to_csv(USED_IDS_FILE, index=False)
 
-def browse_files():
-    root = Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-    file_paths = filedialog.askopenfilenames(filetypes=[("Slide Files", "*.svs *.ndpi")])
-    root.destroy()
-    return list(file_paths)
-
 # ---------------------------- Streamlit App ----------------------------
-st.title("Slide Upload Pipeline - Path Only")
+st.title("Slide Upload Pipeline - Server File Selection")
+
+# List all slide files in the server folder
+all_files = [f for f in os.listdir(SLIDES_FOLDER) if f.endswith((".svs", ".ndpi"))]
 
 # Initialize session state
 if "slides" not in st.session_state:
-    st.session_state.slides = [{"file_path": [], "algorithm": None, "specimen": None}]
+    st.session_state.slides = [{"files": [], "algorithm": None, "specimen": None}]
 
-# Dictionary to track case info in memory
-case_info_dict = {}
+case_info_dict = {}  # Track patient info by case_id
 
 # ----------------- Dynamic slide group UI -----------------
 for i, row in enumerate(st.session_state.slides):
@@ -76,14 +71,17 @@ for i, row in enumerate(st.session_state.slides):
     col1, col2, col3 = st.columns([4,3,3])
 
     with col1:
-        if st.button("Select File(s)", key=f"browse_{i}"):
-            file_paths = browse_files()
-            if file_paths:
-                row['file_path'] = file_paths
-        if row['file_path']:
+        selected_files = st.multiselect(
+            "Select slide files",
+            options=all_files,
+            key=f"select_{i}"
+        )
+        if selected_files:
+            row['files'] = selected_files
+        if row['files']:
             st.write("Selected files:")
-            for f in row['file_path']:
-                st.write(os.path.basename(f))
+            for f in row['files']:
+                st.write(f)
         else:
             st.write("No files selected")
 
@@ -95,7 +93,7 @@ for i, row in enumerate(st.session_state.slides):
 
 # Add a new slide group
 if st.button("Add Slide Group"):
-    st.session_state.slides.append({"file_path": [], "algorithm": None, "specimen": None})
+    st.session_state.slides.append({"files": [], "algorithm": None, "specimen": None})
     st.rerun()
 
 # ----------------- Generate CSV -----------------
@@ -107,22 +105,18 @@ if st.button("Generate Upload CSV"):
     os.makedirs(new_folder, exist_ok=True)
 
     for row in st.session_state.slides:
-        if not row['file_path']:
+        if not row['files']:
             continue
 
         test_name = row['algorithm']
         test_version = TEST_DICT[test_name]
         specimen_type = row['specimen']
 
-        for file_path in row['file_path']:
-            file_name = os.path.basename(file_path)
+        for file_name in row['files']:
             base_name = os.path.splitext(file_name)[0]
             parts = base_name.split("-")
-
-            # Extract case ID from filename (first 12 chars)
             case_id = base_name[:12]
 
-            # Extract block ID and stain
             block_id = parts[2] if len(parts) > 2 else str(random.randint(1000000,9999999))
             stain = "-".join(parts[3:]) if len(parts) > 3 else "H&E"
             test_input_name = f"{stain}_slides"
@@ -131,8 +125,6 @@ if st.button("Generate Upload CSV"):
             if case_id in case_info_dict:
                 info = case_info_dict[case_id]
                 patient_id = info["PatientId"]
-                accession_id = info["AccessionId"]
-                case_assignees = info["CaseAssignees"]
                 first_name = info["FirstName"]
                 last_name = info["LastName"]
                 patient_dob = info["PatientDob"]
@@ -140,25 +132,22 @@ if st.button("Generate Upload CSV"):
                 # Generate new patient info
                 while True:
                     patient_id = random_patient_id()
-                    accession_id = random_accession_id()
-                    case_assignees = random_case_assignees()
-                    if not ((used_ids["PatientId"] == patient_id).any() or
-                            (used_ids["AccessionId"] == accession_id).any() or
-                            (used_ids["CaseAssignees"] == case_assignees).any()):
+                    if not (used_ids["PatientId"] == patient_id).any():
                         break
                 first_name = faker.first_name()
                 last_name = faker.last_name()
                 patient_dob = random_date()
 
-                # Store for future reuse
                 case_info_dict[case_id] = {
                     "PatientId": patient_id,
-                    "AccessionId": accession_id,
-                    "CaseAssignees": case_assignees,
                     "FirstName": first_name,
                     "LastName": last_name,
                     "PatientDob": patient_dob
                 }
+            
+            # Always generate new AccessionId and CaseAssignees
+            accession_id = random_accession_id()
+            case_assignees = random_case_assignees()
 
             # Append to CSV data
             upload_data.append([
@@ -167,8 +156,8 @@ if st.button("Generate Upload CSV"):
                 stain, block_id, "", case_assignees
             ])
 
-            # Copy slide to processed folder
-            shutil.copy(file_path, os.path.join(new_folder, file_name))
+            # Copy slide to processed folder (optional)
+            shutil.copy(os.path.join(SLIDES_FOLDER, file_name), os.path.join(new_folder, file_name))
 
     # Save CSV
     columns = ["Test Name","Test Version","Test Input Name","Patient Dob","Patient Id",
